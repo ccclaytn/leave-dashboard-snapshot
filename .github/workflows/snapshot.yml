@@ -2,11 +2,14 @@ name: Generate Dashboard Snapshot
 
 on:
   schedule:
-    - cron: '*/15 * * * *'   # every 15 minutes
-  workflow_dispatch:          # manual trigger for testing
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
 
 permissions:
   contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   snapshot:
