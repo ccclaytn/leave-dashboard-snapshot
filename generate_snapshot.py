@@ -5,11 +5,13 @@ a static HTML snapshot suitable for GitHub Pages.
 """
 import json
 import os
-import urllib.request
+import sys
 import time
+import urllib.request
 import urllib.error
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
+# ---------- CONFIGURATION ----------
 RENDER_BASE = "https://leave-ballot.onrender.com"
 OUTPUT_FILE = "index.html"
 
@@ -21,36 +23,66 @@ MONTH_NAMES = [
 SLOTS_PER_WEEK = 13
 YEAR = 2027
 
-def fetch_json(endpoint, retries=3, delay=15):
+# ---------- SINGAPORE TIME HELPERS ----------
+def sgt_now():
+    """Return current datetime in Singapore Time (UTC+8)."""
+    return datetime.now(timezone(timedelta(hours=8)))
+
+def fmt_sgt(dt):
+    """Format datetime as '24 May 2027, 03:15 PM SGT'."""
+    return f"{dt.day} {dt.strftime('%b %Y')}, {dt.strftime('%I:%M %p')} SGT"
+
+# ---------- DATA FETCHING ----------
+def fetch_json(endpoint, retries=3, delay=20):
     """Fetch JSON from the Render backend with retries for cold starts."""
     url = f"{RENDER_BASE}{endpoint}"
     for attempt in range(1, retries + 1):
         try:
-            with urllib.request.urlopen(url, timeout=60) as resp:
-                return json.loads(resp.read().decode())
+            print(f"  Attempt {attempt}/{retries}: GET {url}")
+            with urllib.request.urlopen(url, timeout=90) as resp:
+                data = resp.read().decode()
+                print(f"  Received {len(data)} bytes")
+                return json.loads(data)
         except urllib.error.HTTPError as e:
-            print(f"Attempt {attempt}: HTTP {e.code} — {e.reason}")
+            print(f"  HTTP error {e.code}: {e.reason}")
             if attempt < retries:
                 print(f"  Waiting {delay}s before retry...")
                 time.sleep(delay)
             else:
                 raise
         except urllib.error.URLError as e:
-            print(f"Attempt {attempt}: Connection error — {e.reason}")
+            print(f"  Connection error: {e.reason}")
             if attempt < retries:
                 print(f"  Waiting {delay}s before retry...")
                 time.sleep(delay)
             else:
                 raise
 
+# ---------- MAIN SNAPSHOT LOGIC ----------
 def main():
-    data = fetch_json("/api/dashboard-data")
-    ballot_entries = data["ballot_entries"]
+    print(f"Snapshot started at {fmt_sgt(sgt_now())}")
+
+    # 1. Fetch all dashboard data from the live Render backend
+    print("Fetching dashboard data...")
+    try:
+        data = fetch_json("/api/dashboard-data")
+    except Exception as e:
+        print(f"ERROR: Could not fetch data: {e}")
+        sys.exit(1)
+
+    ballot_entries   = data["ballot_entries"]
     additional_leaves = data["additional_leaves"]
     reballot_entries = data["reballot_entries"]
-    draw_results = data["draw_results"]
+    draw_results     = data["draw_results"]
     staff_without_leave = data["staff_without_leave"]
 
+    print(f"Ballot entries: {len(ballot_entries)}")
+    print(f"Additional leaves: {len(additional_leaves)}")
+    print(f"Reballot entries: {len(reballot_entries)}")
+    print(f"Draw results: {len(draw_results)}")
+    print(f"Staff without leave: {len(staff_without_leave)}")
+
+    # 2. Build lookup maps (same logic as the live dashboard)
     other_by_week = {}
     for o in additional_leaves:
         other_by_week.setdefault(o["week"], []).append(o)
@@ -81,21 +113,7 @@ def main():
         m = mon.month - 1
         weeks_by_month.setdefault(m, []).append(week)
 
-    def week_to_range(label):
-        y, w = label.split("-W")
-        y, w = int(y), int(w)
-        jan1 = datetime(y, 1, 1)
-        days_to_monday = (8 - jan1.weekday()) % 7
-        first_monday = jan1 + timedelta(days=days_to_monday)
-        mon = first_monday + timedelta(weeks=w - 1)
-        sun = mon + timedelta(days=6)
-        def fmt(d):
-            return d.strftime("%-d %b %y")
-        return f"{fmt(mon)}–{fmt(sun)}"
-
-    def esc(text):
-        return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
+    # 3. Generate the HTML (same structure as the live dashboard)
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -150,6 +168,8 @@ def main():
   .badge-ML {{ background: #e2e8f0; color: #475569; }}
   .badge-MRL {{ background: #fce7f3; color: #9d174d; }}
   .badge-RL {{ background: #dcfce7; color: #166534; }}
+  .badge-HL {{ background: #fef08a; color: #854d0e; }}
+  .badge-PL {{ background: #e0f2fe; color: #0369a1; }}
   .badge-rebid {{ background: #e0e7ff; color: #3730a3; }}
   .no-entries {{ color: #94a3b8; font-style: italic; font-size: 0.8rem; text-align: center; padding: 0.5rem 0; }}
   .other-section {{ background: #f8fafc; border-radius: 6px; padding: 0.5rem; margin-bottom: 0.5rem; }}
@@ -169,9 +189,10 @@ def main():
 </head>
 <body>
   <h1>📅 Leave Ballot Overview – {YEAR} (Snapshot)</h1>
-  <div class="updated">Last updated: {datetime.now().strftime("%-d %b %Y, %I:%M %p")}</div>
+  <div class="updated">Last updated: {fmt_sgt(sgt_now())}</div>
 """
 
+    # 4. Build week cards (exactly like the live dashboard)
     for m in range(12):
         month_weeks = weeks_by_month.get(m, [])
         if not month_weeks:
@@ -197,7 +218,17 @@ def main():
             has_entries = other_count > 0 or len(ballots) > 0 or total_reballot > 0
             card_class = "week-card has-entries" if has_entries else "week-card"
 
-            html += f'<div class="{card_class}"><div class="week-label"><span>{week_to_range(week)}</span><span class="week-code">{week}</span></div>'
+            # Week range string
+            y, w = week.split("-W")
+            y, w = int(y), int(w)
+            jan1 = datetime(y, 1, 1)
+            days_to_monday = (8 - jan1.weekday()) % 7
+            first_monday = jan1 + timedelta(days=days_to_monday)
+            mon = first_monday + timedelta(weeks=w - 1)
+            sun = mon + timedelta(days=6)
+            range_str = f"{mon.day} {mon.strftime('%b')} {mon.year%100}–{sun.day} {sun.strftime('%b')} {sun.year%100}"
+
+            html += f'<div class="{card_class}"><div class="week-label"><span>{range_str}</span><span class="week-code">{week}</span></div>'
 
             if not has_entries:
                 html += '<div class="no-entries">No ballots</div>'
@@ -205,8 +236,8 @@ def main():
                 if other_leaves:
                     html += f'<div class="other-section"><div style="font-weight:600;">📌 Other Leaves ({other_count})</div><ul class="entry-list">'
                     for o in other_leaves:
-                        badge = "badge-ML" if o["leave_type"] == "ML" else ("badge-MRL" if o["leave_type"] == "MRL" else "badge-RL")
-                        html += f'<li class="entry-item"><span class="staff-info">{esc(o["employee_id"])}</span><span class="badge {badge}">{esc(o["leave_type"])}</span></li>'
+                        badge = "badge-ML" if o["leave_type"] == "ML" else ("badge-MRL" if o["leave_type"] == "MRL" else ("badge-RL" if o["leave_type"] == "RL" else ("badge-HL" if o["leave_type"] == "HL" else "badge-PL")))
+                        html += f'<li class="entry-item"><span class="staff-info">{o["employee_id"].replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")}</span><span class="badge {badge}">{o["leave_type"]}</span></li>'
                     html += '</ul></div>'
 
                 if allocated_entries:
@@ -215,7 +246,7 @@ def main():
                     for e in allocated_entries:
                         badge = "badge-P1" if e["priority"] == "high" else ("badge-bonus" if e["priority"] == "bonus" else "badge-P2")
                         label = "P1" if e["priority"] == "high" else ("Bonus" if e["priority"] == "bonus" else "P2")
-                        html += f'<li class="entry-item"><span class="staff-info">{esc(e["employee_id"])}<span class="modality"> ({esc(e.get("modality","–"))})</span></span><span class="badge {badge}">{label}</span></li>'
+                        html += f'<li class="entry-item"><span class="staff-info">{e["employee_id"].replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")}<span class="modality"> ({e.get("modality","–").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")})</span></span><span class="badge {badge}">{label}</span></li>'
                     html += '</ul></div>'
                 elif has_draw:
                     html += '<div class="allocated-section"><div style="font-weight:600;">✅ Allocated (0)</div><div class="no-entries">No allocations</div></div>'
@@ -226,7 +257,7 @@ def main():
                     for e in unallocated:
                         badge = "badge-P1" if e["priority"] == "high" else ("badge-bonus" if e["priority"] == "bonus" else "badge-P2")
                         label = "P1" if e["priority"] == "high" else ("Bonus" if e["priority"] == "bonus" else "P2")
-                        html += f'<li class="entry-item"><span class="staff-info">{esc(e["employee_id"])}<span class="modality"> ({esc(e.get("modality","–"))})</span></span><span class="badge {badge}">{label}</span></li>'
+                        html += f'<li class="entry-item"><span class="staff-info">{e["employee_id"].replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")}<span class="modality"> ({e.get("modality","–").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")})</span></span><span class="badge {badge}">{label}</span></li>'
                     html += '</ul></div>'
                 elif has_draw:
                     html += '<div class="unallocated-section"><div style="font-weight:600;">❌ Unallocated (0)</div><div class="no-entries">All requests fulfilled or rebidded</div></div>'
@@ -235,7 +266,7 @@ def main():
                     reballot_losers.sort(key=lambda r: r.get("modality",""))
                     html += f'<div class="reballot-section"><div style="font-weight:600;">🔄 Reballot Unallocated ({len(reballot_losers)})</div><ul class="entry-list">'
                     for r in reballot_losers:
-                        html += f'<li class="entry-item"><span class="staff-info">{esc(r["employee_id"])}<span class="modality"> ({esc(r.get("modality","–"))})</span></span><span class="badge badge-rebid">Rebid</span></li>'
+                        html += f'<li class="entry-item"><span class="staff-info">{r["employee_id"].replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")}<span class="modality"> ({r.get("modality","–").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")})</span></span><span class="badge badge-rebid">Rebid</span></li>'
                     html += '</ul></div>'
                 elif has_draw and total_reballot > 0 and not reballot_losers:
                     html += '<div class="reballot-section"><div style="font-weight:600;">🔄 Reballot Unallocated (0)</div><div class="no-entries">All rebids fulfilled</div></div>'
@@ -243,31 +274,33 @@ def main():
                     reballs.sort(key=lambda r: r.get("modality",""))
                     html += f'<div class="reballot-section"><div style="font-weight:600;">🔄 Reballot ({total_reballot})</div><ul class="entry-list">'
                     for r in reballs:
-                        html += f'<li class="entry-item"><span class="staff-info">{esc(r["employee_id"])}<span class="modality"> ({esc(r.get("modality","–"))})</span></span><span class="badge badge-rebid">Rebid</span></li>'
+                        html += f'<li class="entry-item"><span class="staff-info">{r["employee_id"].replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")}<span class="modality"> ({r.get("modality","–").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")})</span></span><span class="badge badge-rebid">Rebid</span></li>'
                     html += '</ul></div>'
 
                 if has_draw:
                     remaining_display = f'<span style="color:red; font-weight:bold;">{remaining}</span>' if remaining < 0 else str(remaining)
                     html += f'<div class="slots-remaining">Remaining slots: {remaining_display} / {SLOTS_PER_WEEK}</div>'
 
-            html += '</div>'
+            html += '</div>'  # week-card
 
-        html += '</div></div>'
+        html += '</div></div>'  # weeks-grid, month-section
 
+    # Staff Without Leave table
     html += '<h2 style="margin-top:2rem;">📋 Staff Without Leave</h2>'
     if not staff_without_leave:
         html += '<p style="color:#94a3b8;">All staff have at least one leave allocation.</p>'
     else:
         html += '<table class="unallocated-table"><thead><tr><th>Employee ID</th><th>Modality</th></tr></thead><tbody>'
         for s in staff_without_leave:
-            html += f'<tr><td>{esc(s["employee_id"])}</td><td>{esc(s.get("modality","–"))}</td></tr>'
+            html += f'<tr><td>{s["employee_id"].replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")}</td><td>{s.get("modality","–").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")}</td></tr>'
         html += '</tbody></table>'
 
     html += '</body></html>'
 
+    # Write output
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
         f.write(html)
-    print("Snapshot written to", OUTPUT_FILE)
+    print(f"Snapshot written to {OUTPUT_FILE} ({len(html)} bytes)")
 
 if __name__ == "__main__":
     main()
