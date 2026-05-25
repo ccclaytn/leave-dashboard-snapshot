@@ -1,9 +1,9 @@
 name: Generate Dashboard Snapshot
 
 on:
-  schedule:
-    - cron: '*/10 * * * *'   # every 10 minutes
-  workflow_dispatch:          # manual trigger for testing
+  repository_dispatch:
+    types: [snapshot-update]       # external cron trigger
+  workflow_dispatch:               # manual trigger for testing
 
 permissions:
   contents: write
