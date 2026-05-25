@@ -2,7 +2,7 @@ name: Generate Dashboard Snapshot
 
 on:
   schedule:
-    - cron: '*/5 * * * *'   # every 10 minutes
+    - cron: '*/10 * * * *'   # every 10 minutes
   workflow_dispatch:          # manual trigger for testing
 
 permissions:
