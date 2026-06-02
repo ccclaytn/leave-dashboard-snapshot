@@ -10,6 +10,7 @@ import time
 import urllib.request
 import urllib.error
 from datetime import datetime, timedelta, timezone
+from collections import Counter
 
 # ---------- CONFIGURATION ----------
 RENDER_BASE = "https://leave-ballot.onrender.com"
@@ -22,19 +23,30 @@ MONTH_NAMES = [
 ]
 SLOTS_PER_WEEK = 13
 YEAR = 2027
+BONUS_WEEK = "2027-W52"
+
+# Holiday emoji mapping (same as frontend)
+HOLIDAY_EMOJI = {
+    '2027-W05': '🧧',
+    '2027-W06': '🧧',
+    '2027-W10': '🕌',
+    '2027-W12': '🕊️',
+    '2027-W17': '👷',
+    '2027-W20': '🪷',
+    '2027-W32': '🇸🇬',
+    '2027-W43': '🪔',
+    '2027-W51': '🎄',
+}
 
 # ---------- SINGAPORE TIME HELPERS ----------
 def sgt_now():
-    """Return current datetime in Singapore Time (UTC+8)."""
     return datetime.now(timezone(timedelta(hours=8)))
 
 def fmt_sgt(dt):
-    """Format datetime as '24 May 2027, 03:15 PM SGT'."""
     return f"{dt.day} {dt.strftime('%b %Y')}, {dt.strftime('%I:%M %p')} SGT"
 
 # ---------- DATA FETCHING ----------
 def fetch_json(endpoint, retries=3, delay=20):
-    """Fetch JSON from the Render backend with retries for cold starts."""
     url = f"{RENDER_BASE}{endpoint}"
     for attempt in range(1, retries + 1):
         try:
@@ -58,18 +70,79 @@ def fetch_json(endpoint, retries=3, delay=20):
             else:
                 raise
 
+# ---------- ANALYTICS (mirrors /api/analytics) ----------
+def build_analytics(ballot_entries, additional_leaves, draw_results, total_staff):
+    """Return the same analytics dict as /api/analytics."""
+    staff_with_ballot = len({b["employee_id"] for b in ballot_entries})
+    submission_rate = round(staff_with_ballot / total_staff * 100, 1) if total_staff else 0
+
+    p1_count = sum(1 for b in ballot_entries if b["priority"] == "high")
+    p2_count = sum(1 for b in ballot_entries if b["priority"] == "low")
+    bonus_optins = sum(1 for b in ballot_entries if b["priority"] == "bonus")
+
+    has_draw = len(draw_results) > 0
+    p1_allocated = 0
+    p2_allocated = 0
+    allocated_counts = Counter()
+    week_demand = Counter()
+    for b in ballot_entries:
+        week_demand[b["week"]] += 1
+
+    if has_draw:
+        allocated_set = {(d["employee_id"], d["week"]) for d in draw_results}
+        for d in draw_results:
+            if d["week"] != BONUS_WEEK:
+                allocated_counts[d["employee_id"]] += 1
+        for b in ballot_entries:
+            if (b["employee_id"], b["week"]) in allocated_set:
+                if b["priority"] == "high":
+                    p1_allocated += 1
+                elif b["priority"] == "low":
+                    p2_allocated += 1
+
+    staff_allocation_distribution = {}
+    if has_draw:
+        # we need the full employee list for distribution – but snapshot doesn't have it.
+        # We'll skip the distribution table in the snapshot, or hardcode to empty.
+        pass
+
+    p1_alloc_rate = round(p1_allocated / p1_count * 100, 1) if p1_count else 0
+    p2_alloc_rate = round(p2_allocated / p2_count * 100, 1) if p2_count else 0
+
+    top_weeks = week_demand.most_common(5)
+
+    # oversubscribed weeks (simple check, without other leaves – snapshot doesn't load them separately)
+    other_counter = Counter(l["week"] for l in additional_leaves)
+    oversubscribed = 0
+    for week, demand in week_demand.items():
+        taken = other_counter.get(week, 0)
+        if demand > (SLOTS_PER_WEEK - taken):
+            oversubscribed += 1
+
+    return {
+        "total_staff": total_staff,
+        "staff_submitted": staff_with_ballot,
+        "submission_rate": submission_rate,
+        "p1_count": p1_count,
+        "p2_count": p2_count,
+        "p1_allocated": p1_allocated,
+        "p2_allocated": p2_allocated,
+        "p1_alloc_rate": p1_alloc_rate,
+        "p2_alloc_rate": p2_alloc_rate,
+        "bonus_optins": bonus_optins,
+        "has_draw": has_draw,
+        "top_weeks": top_weeks,
+        "oversubscribed_weeks": oversubscribed,
+        "staff_allocation_distribution": staff_allocation_distribution
+    }
+
 # ---------- MAIN SNAPSHOT LOGIC ----------
 def main():
     print(f"Snapshot started at {fmt_sgt(sgt_now())}")
 
-    # 1. Fetch all dashboard data from the live Render backend
+    # Fetch live dashboard data
     print("Fetching dashboard data...")
-    try:
-        data = fetch_json("/api/dashboard-data")
-    except Exception as e:
-        print(f"ERROR: Could not fetch data: {e}")
-        sys.exit(1)
-
+    data = fetch_json("/api/dashboard-data")
     ballot_entries   = data["ballot_entries"]
     additional_leaves = data["additional_leaves"]
     reballot_entries = data["reballot_entries"]
@@ -82,7 +155,7 @@ def main():
     print(f"Draw results: {len(draw_results)}")
     print(f"Staff without leave: {len(staff_without_leave)}")
 
-    # 2. Build lookup maps (same logic as the live dashboard)
+    # Build lookup maps
     other_by_week = {}
     for o in additional_leaves:
         other_by_week.setdefault(o["week"], []).append(o)
@@ -113,7 +186,14 @@ def main():
         m = mon.month - 1
         weeks_by_month.setdefault(m, []).append(week)
 
-    # 3. Generate the HTML (same structure as the live dashboard)
+    # Fetch analytics from live endpoint (simplest)
+    analytics = None
+    try:
+        analytics = fetch_json("/api/analytics", retries=1, delay=5)
+    except Exception:
+        print("Could not fetch analytics – continuing without it.")
+
+    # ---------- GENERATE HTML ----------
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -185,6 +265,9 @@ def main():
     padding: 10px 14px; text-align: left; border-bottom: 1px solid #e2e8f0;
   }}
   .unallocated-table th {{ background: #f1f5f9; font-weight: 600; }}
+  .analytics-card {{
+    background: #f0fdf4; border-radius: 8px; padding: 0.8rem; border-left: 4px solid #3b82f6;
+  }}
 </style>
 </head>
 <body>
@@ -192,7 +275,29 @@ def main():
   <div class="updated">Last updated: {fmt_sgt(sgt_now())}</div>
 """
 
-    # 4. Build week cards (exactly like the live dashboard)
+    # ---------- ANALYTICS SECTION (collapsible in live, always visible in snapshot) ----------
+    if analytics:
+        a = analytics
+        html += '<h2 style="margin-top:2rem;">📊 Ballot Analytics</h2>'
+        html += '<div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(220px,1fr)); gap:1rem; margin-bottom:2rem;">'
+
+        html += analytics_card('📋 Submission Rate', f'{a["submission_rate"]}%', f'{a["staff_submitted"]} / {a["total_staff"]} staff')
+        html += analytics_card('🔴 P1 Requests', str(a["p1_count"]), f'{a["p1_alloc_rate"]}% allocated' if a["has_draw"] else 'Draw not run yet')
+        html += analytics_card('🔵 P2 Requests', str(a["p2_count"]), f'{a["p2_alloc_rate"]}% allocated' if a["has_draw"] else 'Draw not run yet')
+        html += analytics_card('🎁 Bonus Opt‑ins', str(a["bonus_optins"]), '')
+        if a["has_draw"]:
+            html += analytics_card('✅ P1 Allocated', str(a["p1_allocated"]), f'{a["p1_alloc_rate"]}% of P1')
+            html += analytics_card('✅ P2 Allocated', str(a["p2_allocated"]), f'{a["p2_alloc_rate"]}% of P2')
+            html += analytics_card('⚠️ Oversubscribed Weeks', str(a["oversubscribed_weeks"]), 'demand > supply')
+        if a["top_weeks"]:
+            top_html = '<ol style="margin:0; padding-left:1.2rem;">'
+            for week, cnt in a["top_weeks"]:
+                top_html += f'<li>{week} ({cnt} ballots)</li>'
+            top_html += '</ol>'
+            html += f'<div style="background:#f8fafc; border-radius:8px; padding:0.8rem;"><div style="font-weight:600; margin-bottom:0.3rem;">🔥 Top 5 Popular Weeks</div>{top_html}</div>'
+        html += '</div>'
+
+    # ---------- WEEK CARDS ----------
     for m in range(12):
         month_weeks = weeks_by_month.get(m, [])
         if not month_weeks:
@@ -218,7 +323,6 @@ def main():
             has_entries = other_count > 0 or len(ballots) > 0 or total_reballot > 0
             card_class = "week-card has-entries" if has_entries else "week-card"
 
-            # Week range string
             y, w = week.split("-W")
             y, w = int(y), int(w)
             jan1 = datetime(y, 1, 1)
@@ -228,7 +332,9 @@ def main():
             sun = mon + timedelta(days=6)
             range_str = f"{mon.day} {mon.strftime('%b')} {mon.year%100}–{sun.day} {sun.strftime('%b')} {sun.year%100}"
 
-            html += f'<div class="{card_class}"><div class="week-label"><span>{range_str}</span><span class="week-code">{week}</span></div>'
+            emoji = HOLIDAY_EMOJI.get(week, '')
+
+            html += f'<div class="{card_class}"><div class="week-label"><span>{range_str}{" " + emoji if emoji else ""}</span><span class="week-code">{week}</span></div>'
 
             if not has_entries:
                 html += '<div class="no-entries">No ballots</div>'
@@ -237,7 +343,7 @@ def main():
                     html += f'<div class="other-section"><div style="font-weight:600;">📌 Other Leaves ({other_count})</div><ul class="entry-list">'
                     for o in other_leaves:
                         badge = "badge-ML" if o["leave_type"] == "ML" else ("badge-MRL" if o["leave_type"] == "MRL" else ("badge-RL" if o["leave_type"] == "RL" else ("badge-HL" if o["leave_type"] == "HL" else "badge-PL")))
-                        html += f'<li class="entry-item"><span class="staff-info">{o["employee_id"].replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")}</span><span class="badge {badge}">{o["leave_type"]}</span></li>'
+                        html += f'<li class="entry-item"><span class="staff-info">{esc(o["employee_id"])}</span><span class="badge {badge}">{esc(o["leave_type"])}</span></li>'
                     html += '</ul></div>'
 
                 if allocated_entries:
@@ -246,7 +352,7 @@ def main():
                     for e in allocated_entries:
                         badge = "badge-P1" if e["priority"] == "high" else ("badge-bonus" if e["priority"] == "bonus" else "badge-P2")
                         label = "P1" if e["priority"] == "high" else ("Bonus" if e["priority"] == "bonus" else "P2")
-                        html += f'<li class="entry-item"><span class="staff-info">{e["employee_id"].replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")}<span class="modality"> ({e.get("modality","–").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")})</span></span><span class="badge {badge}">{label}</span></li>'
+                        html += f'<li class="entry-item"><span class="staff-info">{esc(e["employee_id"])}<span class="modality"> ({esc(e.get("modality","–"))})</span></span><span class="badge {badge}">{label}</span></li>'
                     html += '</ul></div>'
                 elif has_draw:
                     html += '<div class="allocated-section"><div style="font-weight:600;">✅ Allocated (0)</div><div class="no-entries">No allocations</div></div>'
@@ -257,7 +363,7 @@ def main():
                     for e in unallocated:
                         badge = "badge-P1" if e["priority"] == "high" else ("badge-bonus" if e["priority"] == "bonus" else "badge-P2")
                         label = "P1" if e["priority"] == "high" else ("Bonus" if e["priority"] == "bonus" else "P2")
-                        html += f'<li class="entry-item"><span class="staff-info">{e["employee_id"].replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")}<span class="modality"> ({e.get("modality","–").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")})</span></span><span class="badge {badge}">{label}</span></li>'
+                        html += f'<li class="entry-item"><span class="staff-info">{esc(e["employee_id"])}<span class="modality"> ({esc(e.get("modality","–"))})</span></span><span class="badge {badge}">{label}</span></li>'
                     html += '</ul></div>'
                 elif has_draw:
                     html += '<div class="unallocated-section"><div style="font-weight:600;">❌ Unallocated (0)</div><div class="no-entries">All requests fulfilled or rebidded</div></div>'
@@ -266,7 +372,7 @@ def main():
                     reballot_losers.sort(key=lambda r: r.get("modality",""))
                     html += f'<div class="reballot-section"><div style="font-weight:600;">🔄 Reballot Unallocated ({len(reballot_losers)})</div><ul class="entry-list">'
                     for r in reballot_losers:
-                        html += f'<li class="entry-item"><span class="staff-info">{r["employee_id"].replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")}<span class="modality"> ({r.get("modality","–").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")})</span></span><span class="badge badge-rebid">Rebid</span></li>'
+                        html += f'<li class="entry-item"><span class="staff-info">{esc(r["employee_id"])}<span class="modality"> ({esc(r.get("modality","–"))})</span></span><span class="badge badge-rebid">Rebid</span></li>'
                     html += '</ul></div>'
                 elif has_draw and total_reballot > 0 and not reballot_losers:
                     html += '<div class="reballot-section"><div style="font-weight:600;">🔄 Reballot Unallocated (0)</div><div class="no-entries">All rebids fulfilled</div></div>'
@@ -274,7 +380,7 @@ def main():
                     reballs.sort(key=lambda r: r.get("modality",""))
                     html += f'<div class="reballot-section"><div style="font-weight:600;">🔄 Reballot ({total_reballot})</div><ul class="entry-list">'
                     for r in reballs:
-                        html += f'<li class="entry-item"><span class="staff-info">{r["employee_id"].replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")}<span class="modality"> ({r.get("modality","–").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")})</span></span><span class="badge badge-rebid">Rebid</span></li>'
+                        html += f'<li class="entry-item"><span class="staff-info">{esc(r["employee_id"])}<span class="modality"> ({esc(r.get("modality","–"))})</span></span><span class="badge badge-rebid">Rebid</span></li>'
                     html += '</ul></div>'
 
                 if has_draw:
@@ -285,22 +391,32 @@ def main():
 
         html += '</div></div>'  # weeks-grid, month-section
 
-    # Staff Without Leave table
-    html += '<h2 style="margin-top:2rem;">📋 Staff Without Leave</h2>'
+    # ---------- STAFF MISSING LEAVE WEEKS ----------
+    html += '<h2 style="margin-top:2rem;">📋 Staff Missing Leave Weeks</h2>'
     if not staff_without_leave:
-        html += '<p style="color:#94a3b8;">All staff have at least one leave allocation.</p>'
+        html += '<p style="color:#94a3b8;">All staff have their full 4 weeks of leave.</p>'
     else:
-        html += '<table class="unallocated-table"><thead><tr><th>Employee ID</th><th>Modality</th></tr></thead><tbody>'
+        html += '<table class="unallocated-table"><thead><tr><th>Employee ID</th><th>Modality</th><th>Missing Weeks</th></tr></thead><tbody>'
         for s in staff_without_leave:
-            html += f'<tr><td>{s["employee_id"].replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")}</td><td>{s.get("modality","–").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")}</td></tr>'
+            html += f'<tr><td>{esc(s["employee_id"])}</td><td>{esc(s.get("modality","–"))}</td><td>{s["missing_weeks"]}</td></tr>'
         html += '</tbody></table>'
 
     html += '</body></html>'
 
-    # Write output
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
         f.write(html)
     print(f"Snapshot written to {OUTPUT_FILE} ({len(html)} bytes)")
+
+# ---------- HELPERS ----------
+def esc(text):
+    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+def analytics_card(title, value, subtitle):
+    return f'''<div class="analytics-card">
+        <div style="font-size:0.8rem; color:#64748b;">{title}</div>
+        <div style="font-size:1.6rem; font-weight:700; color:#0f172a;">{value}</div>
+        <div style="font-size:0.75rem; color:#475569;">{subtitle}</div>
+    </div>'''
 
 if __name__ == "__main__":
     main()
