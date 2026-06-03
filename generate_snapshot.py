@@ -25,7 +25,6 @@ SLOTS_PER_WEEK = 13
 YEAR = 2027
 BONUS_WEEK = "2027-W52"
 
-# Holiday emoji mapping (same as frontend)
 HOLIDAY_EMOJI = {
     '2027-W05': '🧧',
     '2027-W06': '🧧',
@@ -70,77 +69,10 @@ def fetch_json(endpoint, retries=3, delay=20):
             else:
                 raise
 
-# ---------- ANALYTICS (mirrors /api/analytics) ----------
-def build_analytics(ballot_entries, additional_leaves, draw_results, total_staff):
-    """Return the same analytics dict as /api/analytics."""
-    staff_with_ballot = len({b["employee_id"] for b in ballot_entries})
-    submission_rate = round(staff_with_ballot / total_staff * 100, 1) if total_staff else 0
-
-    p1_count = sum(1 for b in ballot_entries if b["priority"] == "high")
-    p2_count = sum(1 for b in ballot_entries if b["priority"] == "low")
-    bonus_optins = sum(1 for b in ballot_entries if b["priority"] == "bonus")
-
-    has_draw = len(draw_results) > 0
-    p1_allocated = 0
-    p2_allocated = 0
-    allocated_counts = Counter()
-    week_demand = Counter()
-    for b in ballot_entries:
-        week_demand[b["week"]] += 1
-
-    if has_draw:
-        allocated_set = {(d["employee_id"], d["week"]) for d in draw_results}
-        for d in draw_results:
-            if d["week"] != BONUS_WEEK:
-                allocated_counts[d["employee_id"]] += 1
-        for b in ballot_entries:
-            if (b["employee_id"], b["week"]) in allocated_set:
-                if b["priority"] == "high":
-                    p1_allocated += 1
-                elif b["priority"] == "low":
-                    p2_allocated += 1
-
-    staff_allocation_distribution = {}
-    if has_draw:
-        # we need the full employee list for distribution – but snapshot doesn't have it.
-        # We'll skip the distribution table in the snapshot, or hardcode to empty.
-        pass
-
-    p1_alloc_rate = round(p1_allocated / p1_count * 100, 1) if p1_count else 0
-    p2_alloc_rate = round(p2_allocated / p2_count * 100, 1) if p2_count else 0
-
-    top_weeks = week_demand.most_common(5)
-
-    # oversubscribed weeks (simple check, without other leaves – snapshot doesn't load them separately)
-    other_counter = Counter(l["week"] for l in additional_leaves)
-    oversubscribed = 0
-    for week, demand in week_demand.items():
-        taken = other_counter.get(week, 0)
-        if demand > (SLOTS_PER_WEEK - taken):
-            oversubscribed += 1
-
-    return {
-        "total_staff": total_staff,
-        "staff_submitted": staff_with_ballot,
-        "submission_rate": submission_rate,
-        "p1_count": p1_count,
-        "p2_count": p2_count,
-        "p1_allocated": p1_allocated,
-        "p2_allocated": p2_allocated,
-        "p1_alloc_rate": p1_alloc_rate,
-        "p2_alloc_rate": p2_alloc_rate,
-        "bonus_optins": bonus_optins,
-        "has_draw": has_draw,
-        "top_weeks": top_weeks,
-        "oversubscribed_weeks": oversubscribed,
-        "staff_allocation_distribution": staff_allocation_distribution
-    }
-
-# ---------- MAIN SNAPSHOT LOGIC ----------
+# ---------- MAIN ----------
 def main():
     print(f"Snapshot started at {fmt_sgt(sgt_now())}")
 
-    # Fetch live dashboard data
     print("Fetching dashboard data...")
     data = fetch_json("/api/dashboard-data")
     ballot_entries   = data["ballot_entries"]
@@ -186,14 +118,14 @@ def main():
         m = mon.month - 1
         weeks_by_month.setdefault(m, []).append(week)
 
-    # Fetch analytics from live endpoint (simplest)
+    # Fetch analytics
     analytics = None
     try:
         analytics = fetch_json("/api/analytics", retries=1, delay=5)
     except Exception:
         print("Could not fetch analytics – continuing without it.")
 
-    # ---------- GENERATE HTML ----------
+    # ---------- HTML ----------
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -218,11 +150,23 @@ def main():
     position: sticky; top: 0; background: #f8fafc; z-index: 1;
   }}
   .weeks-grid {{
-    display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 0.75rem;
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: 280px;
+    gap: 0.75rem;
+    overflow-x: auto;
+    padding-bottom: 0.5rem;
+    scroll-snap-type: x mandatory;
+    -webkit-overflow-scrolling: touch;
   }}
   .week-card {{
-    background: white; border-radius: 10px; padding: 0.75rem;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.06); border-top: 3px solid #94a3b8; font-size: 0.9rem;
+    scroll-snap-align: start;
+    background: white;
+    border-radius: 10px;
+    padding: 0.75rem;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    border-top: 3px solid #94a3b8;
+    font-size: 0.9rem;
   }}
   .week-card.has-entries {{ border-top-color: #3b82f6; }}
   .week-card .week-label {{
@@ -265,8 +209,33 @@ def main():
     padding: 10px 14px; text-align: left; border-bottom: 1px solid #e2e8f0;
   }}
   .unallocated-table th {{ background: #f1f5f9; font-weight: 600; }}
+
+  /* Analytics – all cards in one responsive grid */
+  #analyticsContent {{ display: block; }}
+  .analytics-cards {{
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 1rem;
+  }}
   .analytics-card {{
-    background: #f0fdf4; border-radius: 8px; padding: 0.8rem; border-left: 4px solid #3b82f6;
+    background: #f8fafc;
+    border-radius: 8px;
+    padding: 0.8rem;
+    border-left: 4px solid #3b82f6;
+  }}
+
+  @media (max-width: 768px) {{
+    .analytics-cards {{
+      grid-template-rows: repeat(2, auto);
+      grid-auto-flow: column;
+      grid-auto-columns: 200px;
+      overflow-x: auto;
+      gap: 0.75rem;
+      padding-bottom: 0.5rem;
+      -webkit-overflow-scrolling: touch;
+      scroll-snap-type: x mandatory;
+    }}
+    .analytics-cards > * {{ scroll-snap-align: start; }}
   }}
 </style>
 </head>
@@ -275,27 +244,47 @@ def main():
   <div class="updated">Last updated: {fmt_sgt(sgt_now())}</div>
 """
 
-    # ---------- ANALYTICS SECTION (collapsible in live, always visible in snapshot) ----------
+    # ---------- ANALYTICS ----------
     if analytics:
         a = analytics
         html += '<h2 style="margin-top:2rem;">📊 Ballot Analytics</h2>'
-        html += '<div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(220px,1fr)); gap:1rem; margin-bottom:2rem;">'
+        html += '<div id="analyticsContent"><div class="analytics-cards">'
 
-        html += analytics_card('📋 Submission Rate', f'{a["submission_rate"]}%', f'{a["staff_submitted"]} / {a["total_staff"]} staff')
-        html += analytics_card('🔴 P1 Requests', str(a["p1_count"]), f'{a["p1_alloc_rate"]}% allocated' if a["has_draw"] else 'Draw not run yet')
-        html += analytics_card('🔵 P2 Requests', str(a["p2_count"]), f'{a["p2_alloc_rate"]}% allocated' if a["has_draw"] else 'Draw not run yet')
+        # Numerical cards
+        html += analytics_card('📋 Submission Rate', f'{a["submission_rate"]}%',
+                               f'{a["staff_submitted"]} / {a["total_staff"]} staff')
+        html += analytics_card('🔴 P1 Requests', str(a["p1_count"]),
+                               f'{a["p1_alloc_rate"]}% allocated' if a["has_draw"] else 'Draw not run yet')
+        html += analytics_card('🔵 P2 Requests', str(a["p2_count"]),
+                               f'{a["p2_alloc_rate"]}% allocated' if a["has_draw"] else 'Draw not run yet')
         html += analytics_card('🎁 Bonus Opt‑ins', str(a["bonus_optins"]), '')
         if a["has_draw"]:
             html += analytics_card('✅ P1 Allocated', str(a["p1_allocated"]), f'{a["p1_alloc_rate"]}% of P1')
             html += analytics_card('✅ P2 Allocated', str(a["p2_allocated"]), f'{a["p2_alloc_rate"]}% of P2')
             html += analytics_card('⚠️ Oversubscribed Weeks', str(a["oversubscribed_weeks"]), 'demand > supply')
+
+        # Top 5 Popular Weeks card
         if a["top_weeks"]:
             top_html = '<ol style="margin:0; padding-left:1.2rem;">'
             for week, cnt in a["top_weeks"]:
                 top_html += f'<li>{week} ({cnt} ballots)</li>'
             top_html += '</ol>'
-            html += f'<div style="background:#f8fafc; border-radius:8px; padding:0.8rem;"><div style="font-weight:600; margin-bottom:0.3rem;">🔥 Top 5 Popular Weeks</div>{top_html}</div>'
-        html += '</div>'
+            html += f'<div class="analytics-card"><div style="font-weight:600; margin-bottom:0.3rem;">🔥 Top 5 Popular Weeks</div>{top_html}</div>'
+        else:
+            html += analytics_card('🔥 Top 5 Popular Weeks', '–', '')
+
+        # Staff Allocation Distribution card
+        if a["has_draw"] and a["staff_allocation_distribution"]:
+            dist_html = '<table style="width:100%; margin:0.3rem 0; border-collapse:collapse;">'
+            dist_html += '<tr><th style="text-align:left; padding:2px 4px; border-bottom:1px solid #e2e8f0;">Weeks</th><th style="text-align:left; padding:2px 4px; border-bottom:1px solid #e2e8f0;"># Staff</th></tr>'
+            for weeks, count in sorted(a["staff_allocation_distribution"].items()):
+                dist_html += f'<tr style="border-bottom:1px solid #f1f5f9;"><td style="padding:2px 4px; color:#475569;">{weeks}</td><td style="padding:2px 4px; color:#475569;">{count}</td></tr>'
+            dist_html += '</table>'
+            html += f'<div class="analytics-card"><div style="font-weight:600; margin-bottom:0.3rem;">👥 Staff Allocation Distribution</div>{dist_html}</div>'
+        else:
+            html += analytics_card('👥 Staff Allocation Distribution', '–', 'Draw not run yet')
+
+        html += '</div></div>'  # analytics-cards + analyticsContent
 
     # ---------- WEEK CARDS ----------
     for m in range(12):
