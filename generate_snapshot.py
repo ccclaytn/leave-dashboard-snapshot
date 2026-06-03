@@ -210,7 +210,7 @@ def main():
   }}
   .unallocated-table th {{ background: #f1f5f9; font-weight: 600; }}
 
-  /* Analytics – all cards in one responsive grid */
+  /* Analytics – single scrollable grid with tall cards spanning 2 rows on mobile */
   #analyticsContent {{ display: block; }}
   .analytics-cards {{
     display: grid;
@@ -223,11 +223,13 @@ def main():
     padding: 0.8rem;
     border-left: 4px solid #3b82f6;
   }}
+  .tall-card {{ }}
 
   @media (max-width: 768px) {{
     .analytics-cards {{
-      grid-template-rows: repeat(2, auto);
       grid-auto-flow: column;
+      grid-template-rows: repeat(2, auto);
+      grid-template-columns: unset;
       grid-auto-columns: 200px;
       overflow-x: auto;
       gap: 0.75rem;
@@ -235,7 +237,12 @@ def main():
       -webkit-overflow-scrolling: touch;
       scroll-snap-type: x mandatory;
     }}
-    .analytics-cards > * {{ scroll-snap-align: start; }}
+    .analytics-cards > * {{
+      scroll-snap-align: start;
+    }}
+    .tall-card {{
+      grid-row: span 2;
+    }}
   }}
 </style>
 </head>
@@ -263,26 +270,25 @@ def main():
             html += analytics_card('✅ P2 Allocated', str(a["p2_allocated"]), f'{a["p2_alloc_rate"]}% of P2')
             html += analytics_card('⚠️ Oversubscribed Weeks', str(a["oversubscribed_weeks"]), 'demand > supply')
 
-        # Top 5 Popular Weeks card
+        # Tall cards (Top 5 Popular Weeks, Staff Allocation Distribution)
         if a["top_weeks"]:
             top_html = '<ol style="margin:0; padding-left:1.2rem;">'
             for week, cnt in a["top_weeks"]:
                 top_html += f'<li>{week} ({cnt} ballots)</li>'
             top_html += '</ol>'
-            html += f'<div class="analytics-card"><div style="font-weight:600; margin-bottom:0.3rem;">🔥 Top 5 Popular Weeks</div>{top_html}</div>'
+            html += f'<div class="analytics-card tall-card"><div style="font-weight:600; margin-bottom:0.3rem;">🔥 Top 5 Popular Weeks</div>{top_html}</div>'
         else:
-            html += analytics_card('🔥 Top 5 Popular Weeks', '–', '')
+            html += '<div class="analytics-card tall-card"><div style="font-size:0.8rem; color:#64748b;">🔥 Top 5 Popular Weeks</div><div style="font-size:1.6rem; font-weight:700; color:#0f172a;">–</div><div style="font-size:0.75rem; color:#475569;"></div></div>'
 
-        # Staff Allocation Distribution card
         if a["has_draw"] and a["staff_allocation_distribution"]:
             dist_html = '<table style="width:100%; margin:0.3rem 0; border-collapse:collapse;">'
             dist_html += '<tr><th style="text-align:left; padding:2px 4px; border-bottom:1px solid #e2e8f0;">Weeks</th><th style="text-align:left; padding:2px 4px; border-bottom:1px solid #e2e8f0;"># Staff</th></tr>'
             for weeks, count in sorted(a["staff_allocation_distribution"].items()):
                 dist_html += f'<tr style="border-bottom:1px solid #f1f5f9;"><td style="padding:2px 4px; color:#475569;">{weeks}</td><td style="padding:2px 4px; color:#475569;">{count}</td></tr>'
             dist_html += '</table>'
-            html += f'<div class="analytics-card"><div style="font-weight:600; margin-bottom:0.3rem;">👥 Staff Allocation Distribution</div>{dist_html}</div>'
+            html += f'<div class="analytics-card tall-card"><div style="font-weight:600; margin-bottom:0.3rem;">👥 Staff Allocation Distribution</div>{dist_html}</div>'
         else:
-            html += analytics_card('👥 Staff Allocation Distribution', '–', 'Draw not run yet')
+            html += '<div class="analytics-card tall-card"><div style="font-size:0.8rem; color:#64748b;">👥 Staff Allocation Distribution</div><div style="font-size:1.6rem; font-weight:700; color:#0f172a;">–</div><div style="font-size:0.75rem; color:#475569;">Draw not run yet</div></div>'
 
         html += '</div></div>'  # analytics-cards + analyticsContent
 
