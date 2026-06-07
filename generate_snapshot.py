@@ -80,6 +80,7 @@ def main():
     reballot_entries = data["reballot_entries"]
     draw_results     = data["draw_results"]
     staff_without_leave = data["staff_without_leave"]
+    slot_info        = data.get("slot_info", {})   # per‑week slot counts
 
     print(f"Ballot entries: {len(ballot_entries)}")
     print(f"Additional leaves: {len(additional_leaves)}")
@@ -210,38 +211,30 @@ def main():
   }}
   .unallocated-table th {{ background: #f1f5f9; font-weight: 600; }}
 
-  /* Analytics – single scrollable grid with tall cards spanning 2 rows on mobile */
+  /* Analytics */
   #analyticsContent {{ display: block; }}
   .analytics-cards {{
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-    gap: 1rem;
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1rem;
   }}
   .analytics-card {{
-    background: #f8fafc;
-    border-radius: 8px;
-    padding: 0.8rem;
-    border-left: 4px solid #3b82f6;
+    background: #f8fafc; border-radius: 8px; padding: 0.8rem; border-left: 4px solid #3b82f6;
   }}
-
   @media (max-width: 768px) {{
     .analytics-cards {{
-      grid-auto-flow: column;
-      grid-template-rows: repeat(2, auto);
-      grid-template-columns: unset;
-      grid-auto-columns: 200px;
-      overflow-x: auto;
-      gap: 0.75rem;
-      padding-bottom: 0.5rem;
-      -webkit-overflow-scrolling: touch;
-      scroll-snap-type: x mandatory;
+      grid-auto-flow: column; grid-template-rows: repeat(2, auto); grid-template-columns: unset;
+      grid-auto-columns: 200px; overflow-x: auto; gap: 0.75rem; padding-bottom: 0.5rem;
+      -webkit-overflow-scrolling: touch; scroll-snap-type: x mandatory;
     }}
-    .analytics-cards > * {{
-      scroll-snap-align: start;
-    }}
-    .tall-card {{
-      grid-row: span 2;
-    }}
+    .analytics-cards > * {{ scroll-snap-align: start; }}
+    .tall-card {{ grid-row: span 2; }}
+  }}
+
+  /* Draw log two‑column grid */
+  .draw-log-grid {{
+    display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem;
+  }}
+  @media (max-width: 768px) {{
+    .draw-log-grid {{ grid-template-columns: 1fr; }}
   }}
 </style>
 </head>
@@ -250,7 +243,7 @@ def main():
   <div class="updated">Last updated: {fmt_sgt(sgt_now())}</div>
 """
 
-    # ---------- WEEK CARDS (first) ----------
+    # ---------- WEEK CARDS ----------
     for m in range(12):
         month_weeks = weeks_by_month.get(m, [])
         if not month_weeks:
@@ -268,10 +261,11 @@ def main():
             allocated_entries = [b for b in ballots if b["employee_id"] in allocated_set]
             reballot_losers = [r for r in reballs if r["employee_id"] not in allocated_set] if has_draw else []
 
+            weekSlots = slot_info.get(week, SLOTS_PER_WEEK)
             other_count = len(other_leaves)
             allocated_count = len(allocated_entries)
             total_reballot = len(reballs)
-            remaining = SLOTS_PER_WEEK - allocated_count - other_count - total_reballot if has_draw else None
+            remaining = weekSlots - allocated_count - other_count - total_reballot if has_draw else None
 
             has_entries = other_count > 0 or len(ballots) > 0 or total_reballot > 0
             card_class = "week-card has-entries" if has_entries else "week-card"
@@ -287,7 +281,7 @@ def main():
 
             emoji = HOLIDAY_EMOJI.get(week, '')
 
-            html += f'<div class="{card_class}"><div class="week-label"><span>{range_str}{" " + emoji if emoji else ""}</span><span class="week-code">{week}</span></div>'
+            html += f'<div class="{card_class}"><div class="week-label"><span>{range_str}{" " + emoji if emoji else ""}</span><span class="week-code">{week} ({weekSlots} slots)</span></div>'
 
             if not has_entries:
                 html += '<div class="no-entries">No ballots</div>'
@@ -338,7 +332,7 @@ def main():
 
                 if has_draw:
                     remaining_display = f'<span style="color:red; font-weight:bold;">{remaining}</span>' if remaining < 0 else str(remaining)
-                    html += f'<div class="slots-remaining">Remaining slots: {remaining_display} / {SLOTS_PER_WEEK}</div>'
+                    html += f'<div class="slots-remaining">Remaining slots: {remaining_display} / {weekSlots}</div>'
 
             html += '</div>'  # week-card
 
@@ -350,29 +344,15 @@ def main():
         html += '<h2 style="margin-top:2rem;">📊 Ballot Analytics</h2>'
         html += '<div id="analyticsContent"><div class="analytics-cards">'
 
-        # Numerical cards
+        # Row 1
         html += analytics_card('📋 Submission Rate', f'{a["submission_rate"]}%',
                                f'{a["staff_submitted"]} / {a["total_staff"]} staff')
         html += analytics_card('🔴 P1 Requests', str(a["p1_count"]),
                                f'{a["p1_alloc_rate"]}% allocated' if a["has_draw"] else 'Draw not run yet')
         html += analytics_card('🔵 P2 Requests', str(a["p2_count"]),
                                f'{a["p2_alloc_rate"]}% allocated' if a["has_draw"] else 'Draw not run yet')
-        html += analytics_card('🎁 Bonus Opt‑ins', str(a["bonus_optins"]), '')
-        if a["has_draw"]:
-            html += analytics_card('✅ P1 Allocated', str(a["p1_allocated"]), f'{a["p1_alloc_rate"]}% of P1')
-            html += analytics_card('✅ P2 Allocated', str(a["p2_allocated"]), f'{a["p2_alloc_rate"]}% of P2')
-            html += analytics_card('⚠️ Oversubscribed Weeks', str(a["oversubscribed_weeks"]), 'demand > supply')
-
-        # Tall cards (Top 5 Popular Weeks, Staff Allocation Distribution)
-        if a["top_weeks"]:
-            top_html = '<ol style="margin:0; padding-left:1.2rem;">'
-            for week, cnt in a["top_weeks"]:
-                top_html += f'<li>{week} ({cnt} ballots)</li>'
-            top_html += '</ol>'
-            html += f'<div class="analytics-card tall-card"><div style="font-weight:600; margin-bottom:0.3rem;">🔥 Top 5 Popular Weeks</div>{top_html}</div>'
-        else:
-            html += '<div class="analytics-card tall-card"><div style="font-size:0.8rem; color:#64748b;">🔥 Top 5 Popular Weeks</div><div style="font-size:1.6rem; font-weight:700; color:#0f172a;">–</div><div style="font-size:0.75rem; color:#475569;"></div></div>'
-
+        html += analytics_card('⚠️ Oversubscribed Weeks', str(a["oversubscribed_weeks"]) if a["has_draw"] else '–',
+                               'demand > supply' if a["has_draw"] else '')
         if a["has_draw"] and a["staff_allocation_distribution"]:
             dist_html = '<table style="width:100%; margin:0.3rem 0; border-collapse:collapse;">'
             dist_html += '<tr><th style="text-align:left; padding:2px 4px; border-bottom:1px solid #e2e8f0;">Weeks</th><th style="text-align:left; padding:2px 4px; border-bottom:1px solid #e2e8f0;"># Staff</th></tr>'
@@ -381,18 +361,107 @@ def main():
             dist_html += '</table>'
             html += f'<div class="analytics-card tall-card"><div style="font-weight:600; margin-bottom:0.3rem;">👥 Staff Allocation Distribution</div>{dist_html}</div>'
         else:
-            html += '<div class="analytics-card tall-card"><div style="font-size:0.8rem; color:#64748b;">👥 Staff Allocation Distribution</div><div style="font-size:1.6rem; font-weight:700; color:#0f172a;">–</div><div style="font-size:0.75rem; color:#475569;">Draw not run yet</div></div>'
+            html += analytics_card('👥 Staff Allocation Distribution', '–', 'Draw not run yet')
+
+        # Row 2
+        html += analytics_card('🎁 Bonus Opt‑ins', str(a["bonus_optins"]), '')
+        html += analytics_card('✅ P1 Allocated', str(a["p1_allocated"]) if a["has_draw"] else '–',
+                               f'{a["p1_alloc_rate"]}% of P1' if a["has_draw"] else '')
+        html += analytics_card('✅ P2 Allocated', str(a["p2_allocated"]) if a["has_draw"] else '–',
+                               f'{a["p2_alloc_rate"]}% of P2' if a["has_draw"] else '')
+        if a["top_weeks"]:
+            top_html = '<ol style="margin:0; padding-left:1.2rem;">'
+            for week, cnt in a["top_weeks"]:
+                top_html += f'<li>{week} ({cnt} ballots)</li>'
+            top_html += '</ol>'
+            html += f'<div class="analytics-card tall-card"><div style="font-weight:600; margin-bottom:0.3rem;">🔥 Top 5 Popular Weeks</div>{top_html}</div>'
+        else:
+            html += analytics_card('🔥 Top 5 Popular Weeks', '–', '')
 
         html += '</div></div>'  # analytics-cards + analyticsContent
 
+    # ---------- DRAW LOG (two‑column accordion) ----------
+    draw_log = None
+    try:
+        draw_log = fetch_json("/api/draw-log", retries=1, delay=5)
+    except Exception:
+        print("Could not fetch draw log.")
+
+    if draw_log:
+        html += '<h2 style="margin-top:2rem;">📝 Draw Log</h2>'
+        html += '<div class="draw-log-grid">'
+        all_weeks = []
+        if draw_log.get("first_draw"):
+            all_weeks.extend(draw_log["first_draw"])
+        if draw_log.get("second_draw"):
+            all_weeks.extend(draw_log["second_draw"])
+
+        for week in all_weeks:
+            range_str = week_to_range(week["week"], week)  # will use helper below
+            emoji = HOLIDAY_EMOJI.get(week["week"], '')
+            label = f'{range_str} {emoji}'.strip()
+            header = f'{label} ({week["week"]}) – {week.get("allocated_count", 0)} allocated, {week.get("remaining_slots", 0)} remaining'
+
+            html += f'''<div style="background:white; border-radius:8px; padding:0.75rem; box-shadow:0 1px 2px rgba(0,0,0,0.04);">
+              <div style="font-weight:600; cursor:pointer; display:flex; justify-content:space-between;" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">
+                <span>{header}</span>
+                <span style="color:#64748b;">▼</span>
+              </div>
+              <div style="display:none; margin-top:0.5rem;">'''
+
+            # P1
+            if week.get("p1_original") and len(week["p1_original"]) > 0:
+                html += f'''<div><strong>P1 Entries</strong>
+                  <div style="font-size:0.8rem; color:#64748b;">Original: {", ".join(week["p1_original"])}</div>
+                  <div style="font-size:0.8rem; color:#64748b;">Shuffled: {", ".join(week.get("p1_shuffled", []))}</div>
+                  <div style="font-size:0.8rem;">{"".join(f"<div>{d}</div>" for d in week.get("p1_decisions", []))}</div>
+                </div>'''
+            # P2
+            if week.get("p2_original") and len(week["p2_original"]) > 0:
+                html += f'''<div><strong>P2 Entries</strong>
+                  <div style="font-size:0.8rem; color:#64748b;">Original: {", ".join(week["p2_original"])}</div>
+                  <div style="font-size:0.8rem; color:#64748b;">Shuffled: {", ".join(week.get("p2_shuffled", []))}</div>
+                  <div style="font-size:0.8rem;">{"".join(f"<div>{d}</div>" for d in week.get("p2_decisions", []))}</div>
+                </div>'''
+            # Reballot
+            if week.get("reballot_original") and len(week["reballot_original"]) > 0:
+                html += f'''<div><strong>Reballot Entries</strong>
+                  <div style="font-size:0.8rem; color:#64748b;">Original: {", ".join(week["reballot_original"])}</div>
+                  <div style="font-size:0.8rem; color:#64748b;">Shuffled: {", ".join(week.get("reballot_shuffled", []))}</div>
+                  <div style="font-size:0.8rem;">{"".join(f"<div>{d}</div>" for d in week.get("reballot_decisions", []))}</div>
+                </div>'''
+            # Bonus
+            if week.get("bonus_original") and len(week["bonus_original"]) > 0:
+                html += f'''<div><strong>Bonus Entries</strong>
+                  <div style="font-size:0.8rem; color:#64748b;">Original: {", ".join(week["bonus_original"])}</div>
+                  <div style="font-size:0.8rem; color:#64748b;">Shuffled: {", ".join(week.get("bonus_shuffled", []))}</div>
+                  <div style="font-size:0.8rem;">{"".join(f"<div>{d}</div>" for d in week.get("bonus_decisions", []))}</div>
+                </div>'''
+
+            html += '</div></div>'
+        html += '</div>'  # draw-log-grid
+
     # ---------- STAFF MISSING LEAVE WEEKS ----------
-    html += '<h2 style="margin-top:2rem;">📋 Staff Missing Leave Weeks</h2>'
+    html += '<h2 style="margin-top:2rem;">📋 Missing Leaves</h2>'
     if not staff_without_leave:
         html += '<p style="color:#94a3b8;">All staff have their full 4 weeks of leave.</p>'
     else:
-        html += '<table class="unallocated-table"><thead><tr><th>Employee ID</th><th>Modality</th><th>Missing Weeks</th></tr></thead><tbody>'
+        # Build unallocated weeks map from ballot cache
+        unallocated_weeks = {}
+        allocated_set = set()
+        for d in draw_results:
+            allocated_set.add((d["employee_id"], d["week"]))
+        for b in ballot_entries:
+            if (b["employee_id"], b["week"]) not in allocated_set:
+                unallocated_weeks.setdefault(b["employee_id"], []).append(b["week"])
+        for emp in unallocated_weeks:
+            unallocated_weeks[emp].sort()
+
+        html += '<table class="unallocated-table"><thead><tr><th>Employee ID</th><th>Modality</th><th>Missing Weeks</th><th>Weeks Not Allocated</th></tr></thead><tbody>'
         for s in staff_without_leave:
-            html += f'<tr><td>{esc(s["employee_id"])}</td><td>{esc(s.get("modality","–"))}</td><td>{s["missing_weeks"]}</td></tr>'
+            unalloc_list = unallocated_weeks.get(s["employee_id"], [])
+            unalloc_str = ", ".join(unalloc_list) if unalloc_list else '–'
+            html += f'<tr><td>{esc(s["employee_id"])}</td><td>{esc(s.get("modality","–"))}</td><td>{s["missing_weeks"]}</td><td style="font-size:0.8rem; color:#475569;">{unalloc_str}</td></tr>'
         html += '</tbody></table>'
 
     html += '</body></html>'
@@ -404,6 +473,17 @@ def main():
 # ---------- HELPERS ----------
 def esc(text):
     return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+def week_to_range(week_label, _week_log=None):
+    """Return date range string like '4 Jan 27 – 10 Jan 27'."""
+    y, w = week_label.split("-W")
+    y, w = int(y), int(w)
+    jan1 = datetime(y, 1, 1)
+    days_to_monday = (8 - jan1.weekday()) % 7
+    first_monday = jan1 + timedelta(days=days_to_monday)
+    mon = first_monday + timedelta(weeks=w - 1)
+    sun = mon + timedelta(days=6)
+    return f"{mon.day} {mon.strftime('%b')} {mon.year%100}–{sun.day} {sun.strftime('%b')} {sun.year%100}"
 
 def analytics_card(title, value, subtitle):
     return f'''<div class="analytics-card">
